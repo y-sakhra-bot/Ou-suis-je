@@ -1,0 +1,12 @@
+{
+  "name": "Où suis-je – GPS",
+  "short_name": "Où suis-je",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f5c4d",
+  "theme_color": "#0f5c4d",
+  "lang": "fr",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

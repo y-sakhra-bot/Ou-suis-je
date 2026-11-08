@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f5c4d">
+<title>Où suis-je – GPS</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    --bg: #f3f6f5; --card: #ffffff; --fg: #15211e; --muted: #5b6b67;
+    --accent: #0f5c4d; --accent-fg: #ffffff; --line: #d8e1de; --warn: #b5532a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0e1513; --card: #172220; --fg: #e6efec; --muted: #93a6a1;
+      --accent: #3fb59b; --accent-fg: #06201a; --line: #2a3835; --warn: #ef8f63; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         display: flex; flex-direction: column; }
+  header { padding: calc(10px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left));
+           background: var(--accent); color: var(--accent-fg); display: flex; align-items: center; gap: 10px; }
+  header h1 { font-size: 17px; margin: 0; flex: 1; }
+  #status { font-size: 12px; opacity: .9; }
+  #map { flex: 1; min-height: 45vh; }
+  .panel { background: var(--card); border-top: 1px solid var(--line);
+           padding: 12px max(16px, env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left));
+           display: grid; gap: 10px; max-height: 55vh; overflow-y: auto; }
+  .coords { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px 14px; }
+  .coords div { min-width: 0; }
+  .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .val { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 16px; overflow-wrap: anywhere; }
+  .dms { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; }
+  button, .btn { appearance: none; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+         padding: 10px 14px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; text-decoration: none;
+         display: inline-flex; align-items: center; gap: 6px; }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  button:focus-visible, .btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+  .err { color: var(--warn); font-weight: 600; }
+  details summary { cursor: pointer; font-weight: 600; }
+  ul#hist { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 6px; }
+  ul#hist li { display: flex; gap: 8px; align-items: center; font-size: 13px; font-variant-numeric: tabular-nums; }
+  ul#hist li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  ul#hist li button { padding: 4px 8px; font-size: 12px; }
+  .survey { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; }
+  #codeInput { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+               background: var(--bg); color: var(--fg); font: inherit; }
+  select { font: inherit; padding: 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  .chk { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0; font-size: 14px; }
+  button:disabled { opacity: .6; cursor: wait; }
+  #toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+           background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 1000; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Où suis-je</h1>
+  <span id="status">En attente du GPS…</span>
+</header>
+
+<div id="map" role="application" aria-label="Carte"></div>
+
+<section class="panel">
+  <div class="coords">
+    <div><div class="lbl">Latitude</div><div class="val" id="lat">—</div><div class="dms" id="latDms"></div></div>
+    <div><div class="lbl">Longitude</div><div class="val" id="lon">—</div><div class="dms" id="lonDms"></div></div>
+    <div><div class="lbl">Précision</div><div class="val" id="acc">—</div></div>
+    <div><div class="lbl">Altitude</div><div class="val" id="alt">—</div></div>
+    <div><div class="lbl">Vitesse</div><div class="val" id="spd">—</div></div>
+    <div><div class="lbl">Heure du relevé</div><div class="val" id="time">—</div></div>
+  </div>
+  <div id="error" class="err" hidden></div>
+
+  <div class="row">
+    <button class="primary" id="btnLocate">📍 Me localiser</button>
+    <button id="btnTrack" aria-pressed="false">Suivi continu</button>
+  </div>
+  <div class="survey">
+    <div class="lbl">Levé – point n° <span id="nextNum">1</span></div>
+    <div class="row">
+      <input id="codeInput" type="text" placeholder="Code / description (ex. borne, arbre, angle bâti)" autocomplete="off">
+    </div>
+    <div class="row" style="align-items:center">
+      <label class="chk"><input type="checkbox" id="avgChk" checked> Moyenner pendant
+        <select id="avgSec"><option value="5">5 s</option><option value="10" selected>10 s</option><option value="30">30 s</option></select></label>
+      <button class="primary" id="btnSave">Relever le point</button>
+    </div>
+  </div>
+  <div class="row">
+    <a class="btn" id="lnkGoogle" target="_blank" rel="noopener">Ouvrir dans Google Maps</a>
+    <a class="btn" id="lnkOsm" target="_blank" rel="noopener">OpenStreetMap</a>
+    <a class="btn" id="lnkWaze" target="_blank" rel="noopener">Waze</a>
+    <button id="btnCopy">Copier</button>
+    <button id="btnShare">Partager</button>
+  </div>
+
+  <details>
+    <summary>Points enregistrés (<span id="histCount">0</span>)</summary>
+    <ul id="hist"></ul>
+    <div class="row" style="margin-top:8px;align-items:center">
+      <label class="chk">Géométrie
+        <select id="geomSel">
+          <option value="points">Points seuls</option>
+          <option value="line">Points + ligne</option>
+          <option value="polygon">Points + polygone</option>
+        </select></label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="primary" id="btnGeojson">QGIS (GeoJSON)</button>
+      <button class="primary" id="btnKml">Google Earth (KML)</button>
+      <button id="btnExport">Exporter CSV</button>
+      <button id="btnClear">Tout effacer</button>
+    </div>
+  </details>
+</section>
+<div id="toast" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  let current = null, watchId = null, firstFix = true;
+
+  // --- Carte (OpenStreetMap via Leaflet, gratuit et sans clé API) ---
+  const map = L.map('map', { zoomControl: true }).setView([46.6, 2.4], 5);
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+  const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19, attribution: 'Imagerie &copy; Esri'
+  });
+  L.control.layers({ 'Plan': osm, 'Satellite': sat }).addTo(map);
+  const marker = L.marker([0, 0]);
+  const circle = L.circle([0, 0], { radius: 0, weight: 1, fillOpacity: .15 });
+  const savedLayer = L.layerGroup().addTo(map);
+
+  // --- Formats ---
+  function toDms(v, pos, neg) {
+    const h = v >= 0 ? pos : neg; v = Math.abs(v);
+    const tenths = Math.round(v * 36000); // dixièmes de seconde, évite « 60.0″ »
+    const d = Math.floor(tenths / 36000), m = Math.floor((tenths % 36000) / 600), s = ((tenths % 600) / 10).toFixed(1);
+    return `${d}° ${m}′ ${s}″ ${h}`;
+  }
+  const fmt = (n, d = 6) => n.toFixed(d);
+  function toast(msg) {
+    const t = $('toast'); t.textContent = msg; t.hidden = false;
+    clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), 2200);
+  }
+
+  // --- Mise à jour de l'affichage ---
+  function update(pos) {
+    const c = pos.coords;
+    current = { lat: c.latitude, lon: c.longitude, acc: c.accuracy, alt: c.altitude, spd: c.speed, t: pos.timestamp };
+    $('lat').textContent = fmt(c.latitude);
+    $('lon').textContent = fmt(c.longitude);
+    $('latDms').textContent = toDms(c.latitude, 'N', 'S');
+    $('lonDms').textContent = toDms(c.longitude, 'E', 'O');
+    $('acc').textContent = `± ${Math.round(c.accuracy)} m`;
+    $('alt').textContent = c.altitude != null ? `${Math.round(c.altitude)} m` : 'n/d';
+    $('spd').textContent = c.speed != null ? `${(c.speed * 3.6).toFixed(1)} km/h` : 'n/d';
+    $('time').textContent = new Date(pos.timestamp).toLocaleTimeString('fr-FR');
+    $('error').hidden = true;
+    $('status').textContent = watchId != null ? 'Suivi en cours' : 'Position trouvée';
+
+    const ll = [c.latitude, c.longitude];
+    marker.setLatLng(ll).addTo(map);
+    circle.setLatLng(ll).setRadius(c.accuracy).addTo(map);
+    if (firstFix) { map.setView(ll, 17); firstFix = false; } else if (watchId != null) { map.panTo(ll); }
+
+    const q = `${c.latitude},${c.longitude}`;
+    $('lnkGoogle').href = `https://www.google.com/maps/search/?api=1&query=${q}`;
+    $('lnkOsm').href = `https://www.openstreetmap.org/?mlat=${c.latitude}&mlon=${c.longitude}#map=17/${q.replace(',', '/')}`;
+    $('lnkWaze').href = `https://waze.com/ul?ll=${q}&navigate=yes`;
+  }
+
+  function onError(err) {
+    const msgs = {
+      1: "Accès à la position refusé. Autorisez la localisation pour ce site dans les réglages du navigateur.",
+      2: "Position indisponible. Activez le GPS / la localisation du téléphone et réessayez à l'extérieur.",
+      3: "Délai dépassé. Réessayez (le premier relevé GPS peut prendre quelques secondes)."
+    };
+    $('error').textContent = msgs[err.code] || err.message;
+    $('error').hidden = false;
+    $('status').textContent = 'Erreur GPS';
+  }
+
+  const opts = { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 };
+
+  function requireGeo() {
+    if (!('geolocation' in navigator)) { onError({ message: "Ce navigateur ne gère pas la géolocalisation." }); return false; }
+    if (!window.isSecureContext) { onError({ message: "La géolocalisation exige une adresse HTTPS. Hébergez l'app en https:// (voir LISEZMOI)." }); return false; }
+    return true;
+  }
+
+  $('btnLocate').onclick = () => {
+    if (!requireGeo()) return;
+    $('status').textContent = 'Recherche…'; firstFix = true;
+    navigator.geolocation.getCurrentPosition(update, onError, opts);
+  };
+
+  $('btnTrack').onclick = () => {
+    if (watchId != null) {
+      navigator.geolocation.clearWatch(watchId); watchId = null;
+      $('btnTrack').setAttribute('aria-pressed', 'false'); $('status').textContent = 'Suivi arrêté'; return;
+    }
+    if (!requireGeo()) return;
+    watchId = navigator.geolocation.watchPosition(update, onError, opts);
+    $('btnTrack').setAttribute('aria-pressed', 'true'); $('status').textContent = 'Suivi en cours';
+  };
+
+  const text = () => current ? `${fmt(current.lat)}, ${fmt(current.lon)}` : null;
+
+  $('btnCopy').onclick = async () => {
+    if (!text()) return toast("Localisez-vous d'abord");
+    try { await navigator.clipboard.writeText(text()); toast('Coordonnées copiées'); }
+    catch { toast(text()); }
+  };
+  $('btnShare').onclick = async () => {
+    if (!text()) return toast("Localisez-vous d'abord");
+    const url = `https://www.google.com/maps/search/?api=1&query=${current.lat},${current.lon}`;
+    if (navigator.share) { try { await navigator.share({ title: 'Ma position', text: text(), url }); } catch {} }
+    else { try { await navigator.clipboard.writeText(url); toast('Lien copié'); } catch { toast(url); } }
+  };
+
+  // --- Levé : points enregistrés (stockés sur le téléphone) ---
+  const KEY = 'geoapp.points';
+  const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } };
+  const store = (p) => { try { localStorage.setItem(KEY, JSON.stringify(p)); } catch {} };
+  const byNum = (pts) => pts.slice().sort((a, b) => a.num - b.num);
+  const nextNum = (pts) => pts.reduce((m, p) => Math.max(m, p.num || 0), 0) + 1;
+
+  // Anciennes données sans numéro : on les numérote une fois
+  (function migrate() {
+    const pts = load(); if (!pts.some(p => p.num == null)) return;
+    pts.slice().reverse().forEach((p, i) => { if (p.num == null) { p.num = i + 1; p.code = p.code || ''; } });
+    store(pts);
+  })();
+
+  function renderHist() {
+    const pts = byNum(load()); $('histCount').textContent = pts.length; $('nextNum').textContent = nextNum(pts);
+    const ul = $('hist'); ul.innerHTML = ''; savedLayer.clearLayers();
+    pts.slice().reverse().forEach((p) => {
+      const li = document.createElement('li');
+      const s = document.createElement('span');
+      s.textContent = `n° ${p.num}${p.code ? ' · ' + p.code : ''} · ${fmt(p.lat, 6)}, ${fmt(p.lon, 6)} · ±${p.acc} m${p.n > 1 ? ` (${p.n} mes.)` : ''}`;
+      const go = document.createElement('button'); go.textContent = 'Voir';
+      go.onclick = () => map.setView([p.lat, p.lon], 19);
+      const del = document.createElement('button'); del.textContent = '✕'; del.setAttribute('aria-label', `Supprimer le point ${p.num}`);
+      del.onclick = () => { store(load().filter(q => q.num !== p.num)); renderHist(); };
+      li.append(s, go, del); ul.append(li);
+      L.circleMarker([p.lat, p.lon], { radius: 6 })
+        .bindTooltip(String(p.num), { permanent: true, direction: 'right', offset: [6, 0] })
+        .bindPopup(`n° ${p.num}${p.code ? ' – ' + p.code : ''}`).addTo(savedLayer);
+    });
+    const g = $('geomSel').value;
+    if (g !== 'points' && pts.length >= 2) {
+      const ll = pts.map(p => [p.lat, p.lon]);
+      (g === 'polygon' && pts.length >= 3 ? L.polygon(ll, { weight: 2 }) : L.polyline(ll, { weight: 2 })).addTo(savedLayer);
+    }
+  }
+  $('geomSel').onchange = renderHist;
+
+  function addPoint(m) {
+    const pts = load();
+    pts.push({ num: nextNum(pts), code: $('codeInput').value.trim(), ...m });
+    store(pts); renderHist(); $('codeInput').value = '';
+    toast(`Point n° ${pts[pts.length - 1].num} enregistré (±${m.acc} m)`);
+  }
+
+  // Mesure moyennée : on collecte les relevés pendant N secondes, pondérés par 1/précision²
+  function measureAveraged(sec) {
+    return new Promise((resolve, reject) => {
+      const samples = [];
+      const id = navigator.geolocation.watchPosition(p => samples.push(p.coords), err => { if (!samples.length) { clear(); reject(err); } }, opts);
+      let left = sec;
+      const tick = setInterval(() => { left--; $('btnSave').textContent = `Mesure… ${left} s (${samples.length})`; if (left <= 0) finish(); }, 1000);
+      function clear() { clearInterval(tick); navigator.geolocation.clearWatch(id); }
+      function finish() {
+        clear();
+        if (!samples.length) return reject({ code: 3 });
+        let w = 0, la = 0, lo = 0, al = 0, wa = 0;
+        samples.forEach(c => { const k = 1 / Math.max(c.accuracy, 1) ** 2; w += k; la += c.latitude * k; lo += c.longitude * k;
+          if (c.altitude != null) { al += c.altitude * k; wa += k; } });
+        const best = Math.min(...samples.map(c => c.accuracy));
+        resolve({ lat: la / w, lon: lo / w, alt: wa ? Math.round(al / wa * 10) / 10 : null,
+                  acc: Math.round(Math.max(1 / Math.sqrt(w), best / Math.sqrt(samples.length)) * 10) / 10, n: samples.length, t: Date.now() });
+      }
+    });
+  }
+
+  $('btnSave').onclick = async () => {
+    if ($('avgChk').checked) {
+      if (!requireGeo()) return;
+      const b = $('btnSave'); b.disabled = true;
+      try { addPoint(await measureAveraged(+$('avgSec').value)); }
+      catch (e) { onError(e); }
+      finally { b.disabled = false; b.textContent = 'Relever le point'; }
+    } else {
+      if (!current) return toast("Localisez-vous d'abord");
+      addPoint({ lat: current.lat, lon: current.lon, alt: current.alt != null ? Math.round(current.alt * 10) / 10 : null,
+                 acc: Math.round(current.acc * 10) / 10, n: 1, t: current.t });
+    }
+  };
+  $('btnClear').onclick = () => {
+    if ($('btnClear').dataset.confirm) { store([]); renderHist(); delete $('btnClear').dataset.confirm; $('btnClear').textContent = 'Tout effacer'; }
+    else { $('btnClear').dataset.confirm = 1; $('btnClear').textContent = 'Confirmer ?'; }
+  };
+
+  // --- Exports ---
+  const stamp = () => new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+  async function saveFile(content, name, type) {
+    const blob = new Blob([content], { type });
+    const file = new File([blob], name, { type });
+    if (navigator.canShare && navigator.canShare({ files: [file] }) && /iPhone|iPad|Android/i.test(navigator.userAgent)) {
+      try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e.name === 'AbortError') return; }
+    }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  function getPts() { const pts = byNum(load()); if (!pts.length) toast('Aucun point relevé'); return pts; }
+  const props = (p) => ({ num: p.num, code: p.code || '', latitude: +p.lat.toFixed(8), longitude: +p.lon.toFixed(8),
+    altitude_m: p.alt ?? null, precision_m: p.acc, nb_mesures: p.n || 1, date: new Date(p.t).toISOString() });
+
+  function buildGeojson(pts, geom) {
+    const features = pts.map(p => ({ type: 'Feature', properties: props(p),
+      geometry: { type: 'Point', coordinates: [+p.lon.toFixed(8), +p.lat.toFixed(8)] } }));
+    const ring = pts.map(p => [+p.lon.toFixed(8), +p.lat.toFixed(8)]);
+    if (geom === 'line' && pts.length >= 2)
+      features.push({ type: 'Feature', properties: { num: null, code: 'ligne', nb_points: pts.length },
+        geometry: { type: 'LineString', coordinates: ring } });
+    if (geom === 'polygon' && pts.length >= 3)
+      features.push({ type: 'Feature', properties: { num: null, code: 'polygone', nb_points: pts.length },
+        geometry: { type: 'Polygon', coordinates: [[...ring, ring[0]]] } });
+    return JSON.stringify({ type: 'FeatureCollection', name: 'leve_gps', features }, null, 1);
+  }
+
+  const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  function buildKml(pts, geom) {
+    const c = (p) => `${p.lon.toFixed(8)},${p.lat.toFixed(8)},${p.alt ?? 0}`;
+    const data = (p) => Object.entries(props(p)).map(([k, v]) => `<Data name="${k}"><value>${esc(v ?? '')}</value></Data>`).join('');
+    const marks = pts.map(p => `  <Placemark><name>${p.num}${p.code ? ' ' + esc(p.code) : ''}</name><styleUrl>#pt</styleUrl>
+   <ExtendedData>${data(p)}</ExtendedData><Point><coordinates>${c(p)}</coordinates></Point></Placemark>`);
+    const coords = pts.map(c).join(' ');
+    if (geom === 'line' && pts.length >= 2)
+      marks.push(`  <Placemark><name>Ligne</name><styleUrl>#geo</styleUrl><LineString><tessellate>1</tessellate><coordinates>${coords}</coordinates></LineString></Placemark>`);
+    if (geom === 'polygon' && pts.length >= 3)
+      marks.push(`  <Placemark><name>Polygone</name><styleUrl>#geo</styleUrl><Polygon><tessellate>1</tessellate><outerBoundaryIs><LinearRing><coordinates>${coords} ${c(pts[0])}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>`);
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Levé GPS ${new Date().toLocaleString('fr-FR')}</name>
+ <Style id="pt"><IconStyle><scale>0.8</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href></Icon></IconStyle><LabelStyle><scale>0.9</scale></LabelStyle></Style>
+ <Style id="geo"><LineStyle><color>ff00ffff</color><width>2</width></LineStyle><PolyStyle><color>4000ffff</color></PolyStyle></Style>
+${marks.join('\n')}
+</Document></kml>`;
+  }
+
+  $('btnGeojson').onclick = () => { const pts = getPts(); if (pts.length) saveFile(buildGeojson(pts, $('geomSel').value), `leve_gps_${stamp()}.geojson`, 'application/geo+json'); };
+  $('btnKml').onclick = () => { const pts = getPts(); if (pts.length) saveFile(buildKml(pts, $('geomSel').value), `leve_gps_${stamp()}.kml`, 'application/vnd.google-earth.kml+xml'); };
+  $('btnExport').onclick = () => {
+    const pts = getPts(); if (!pts.length) return;
+    const csv = 'num;code;latitude;longitude;altitude_m;precision_m;nb_mesures;date\n' +
+      pts.map(p => [p.num, `"${(p.code || '').replace(/"/g, '""')}"`, p.lat.toFixed(8), p.lon.toFixed(8), p.alt ?? '', p.acc, p.n || 1, new Date(p.t).toISOString()].join(';')).join('\n');
+    saveFile(csv, `leve_gps_${stamp()}.csv`, 'text/csv');
+  };
+  window.__geo = { buildGeojson, buildKml, load };
+
+  renderHist();
+  if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
+})();
+</script>
+</body>
+</html>
