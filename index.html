@@ -78,7 +78,22 @@
 
   <div class="row">
     <button class="primary" id="btnLocate">📍 Me localiser</button>
-    <button id="btnTrack" aria-pressed="false">Suivi continu</button>
+    <button id="btnTrack" aria-pressed="false">⏺ Enregistrer une trace</button>
+  </div>
+  <div class="survey" id="trackBox">
+    <div class="lbl">Trace GPS <span id="trkState"></span></div>
+    <div class="coords">
+      <div><div class="lbl">Distance</div><div class="val" id="trkDist">0 m</div></div>
+      <div><div class="lbl">Durée</div><div class="val" id="trkDur">0 min</div></div>
+      <div><div class="lbl">Vitesse moy.</div><div class="val" id="trkSpd">—</div></div>
+      <div><div class="lbl">Points</div><div class="val" id="trkPts">0</div></div>
+    </div>
+    <div class="row">
+      <button id="btnTrkGpx">GPX</button>
+      <button id="btnTrkGeo">QGIS (GeoJSON)</button>
+      <button id="btnTrkKml">Google Earth (KML)</button>
+      <button id="btnTrkClear">Effacer la trace</button>
+    </div>
   </div>
   <div class="survey">
     <div class="lbl">Levé – point n° <span id="nextNum">1</span></div>
@@ -165,7 +180,8 @@
     $('spd').textContent = c.speed != null ? `${(c.speed * 3.6).toFixed(1)} km/h` : 'n/d';
     $('time').textContent = new Date(pos.timestamp).toLocaleTimeString('fr-FR');
     $('error').hidden = true;
-    $('status').textContent = watchId != null ? 'Suivi en cours' : 'Position trouvée';
+    $('status').textContent = watchId != null ? 'Trace en cours' : 'Position trouvée';
+    if (watchId != null) addTrackPoint(pos);
 
     const ll = [c.latitude, c.longitude];
     marker.setLatLng(ll).addTo(map);
@@ -205,12 +221,15 @@
 
   $('btnTrack').onclick = () => {
     if (watchId != null) {
-      navigator.geolocation.clearWatch(watchId); watchId = null;
-      $('btnTrack').setAttribute('aria-pressed', 'false'); $('status').textContent = 'Suivi arrêté'; return;
+      navigator.geolocation.clearWatch(watchId); watchId = null; releaseWake();
+      $('btnTrack').setAttribute('aria-pressed', 'false'); $('btnTrack').textContent = '⏺ Enregistrer une trace';
+      $('status').textContent = 'Trace en pause'; renderTrack(); return;
     }
     if (!requireGeo()) return;
+    startSegment();
     watchId = navigator.geolocation.watchPosition(update, onError, opts);
-    $('btnTrack').setAttribute('aria-pressed', 'true'); $('status').textContent = 'Suivi en cours';
+    $('btnTrack').setAttribute('aria-pressed', 'true'); $('btnTrack').textContent = '⏸ Arrêter la trace';
+    $('status').textContent = 'Trace en cours'; requestWake(); renderTrack();
   };
 
   const text = () => current ? `${fmt(current.lat)}, ${fmt(current.lon)}` : null;
@@ -366,7 +385,89 @@ ${marks.join('\n')}
       pts.map(p => [p.num, `"${(p.code || '').replace(/"/g, '""')}"`, p.lat.toFixed(8), p.lon.toFixed(8), p.alt ?? '', p.acc, p.n || 1, new Date(p.t).toISOString()].join(';')).join('\n');
     saveFile(csv, `leve_gps_${stamp()}.csv`, 'text/csv');
   };
-  window.__geo = { buildGeojson, buildKml, load };
+
+  // --- Trace GPS (enregistrement continu de la position) ---
+  // Format : liste de segments, chaque segment = liste de [lat, lon, alt|null, t(ms), précision]
+  const TKEY = 'geoapp.track';
+  let track = (() => { try { return JSON.parse(localStorage.getItem(TKEY)) || []; } catch { return []; } })();
+  const saveTrack = () => { try { localStorage.setItem(TKEY, JSON.stringify(track)); } catch {} };
+  const trackLine = L.polyline([], { color: '#e0457b', weight: 4, opacity: .85 }).addTo(map);
+  const MAX_ACC = 30, MIN_STEP = 3; // on ignore les relevés imprécis (> 30 m) et les micro-déplacements (< 3 m)
+
+  function haversine(a, b) {
+    const R = 6371008.8, r = Math.PI / 180;
+    const dLa = (b[0] - a[0]) * r, dLo = (b[1] - a[1]) * r;
+    const h = Math.sin(dLa / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dLo / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  function trackStats() {
+    let dist = 0, dur = 0, n = 0;
+    track.forEach(seg => { n += seg.length; for (let i = 1; i < seg.length; i++) dist += haversine(seg[i - 1], seg[i]);
+      if (seg.length > 1) dur += seg[seg.length - 1][3] - seg[0][3]; });
+    return { dist, dur, n };
+  }
+  function startSegment() { if (!track.length || track[track.length - 1].length) track.push([]); saveTrack(); }
+  function addTrackPoint(pos) {
+    const c = pos.coords; if (c.accuracy > MAX_ACC) return;
+    const seg = track[track.length - 1]; const p = [+c.latitude.toFixed(7), +c.longitude.toFixed(7),
+      c.altitude != null ? Math.round(c.altitude * 10) / 10 : null, pos.timestamp, Math.round(c.accuracy)];
+    if (seg.length && haversine(seg[seg.length - 1], p) < MIN_STEP) return;
+    seg.push(p); saveTrack(); renderTrack();
+  }
+  function renderTrack() {
+    trackLine.setLatLngs(track.filter(s => s.length).map(s => s.map(p => [p[0], p[1]])));
+    const { dist, dur, n } = trackStats();
+    $('trkDist').textContent = dist >= 1000 ? `${(dist / 1000).toFixed(2)} km` : `${Math.round(dist)} m`;
+    const m = Math.round(dur / 60000); $('trkDur').textContent = m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
+    $('trkSpd').textContent = dur > 30000 ? `${(dist / (dur / 1000) * 3.6).toFixed(1)} km/h` : '—';
+    $('trkPts').textContent = n;
+    $('trkState').textContent = watchId != null ? '· enregistrement…' : (n ? '· en pause' : '');
+  }
+
+  // Garder l'écran allumé pendant la trace (sinon le navigateur suspend le GPS)
+  let wake = null;
+  async function requestWake() { try { wake = await navigator.wakeLock?.request('screen'); } catch { wake = null; } }
+  function releaseWake() { try { wake?.release(); } catch {} wake = null; }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && watchId != null) requestWake(); });
+
+  function trkPts() { const segs = track.filter(s => s.length >= 2); if (!segs.length) toast('Trace vide : enregistrez au moins 2 positions'); return segs; }
+  const iso = (t) => new Date(t).toISOString();
+  function buildGpx(segs) {
+    const pt = (p) => `<trkpt lat="${p[0]}" lon="${p[1]}">${p[2] != null ? `<ele>${p[2]}</ele>` : ''}<time>${iso(p[3])}</time><hdop>${(p[4] / 5).toFixed(1)}</hdop></trkpt>`;
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Ou suis-je" xmlns="http://www.topografix.com/GPX/1/1">
+ <metadata><name>Trace ${new Date(segs[0][0][3]).toLocaleString('fr-FR')}</name><time>${iso(segs[0][0][3])}</time></metadata>
+ <trk><name>Trace GPS</name>
+${segs.map(s => '  <trkseg>\n   ' + s.map(pt).join('\n   ') + '\n  </trkseg>').join('\n')}
+ </trk>
+</gpx>`;
+  }
+  function buildTrackGeojson(segs) {
+    const { dist, dur } = trackStats();
+    return JSON.stringify({ type: 'FeatureCollection', name: 'trace_gps', features: [{ type: 'Feature',
+      properties: { nom: 'Trace GPS', debut: iso(segs[0][0][3]), fin: iso(segs.at(-1).at(-1)[3]),
+        distance_m: Math.round(dist), duree_s: Math.round(dur / 1000), nb_points: segs.reduce((a, s) => a + s.length, 0) },
+      geometry: { type: 'MultiLineString', coordinates: segs.map(s => s.map(p => p[2] != null ? [p[1], p[0], p[2]] : [p[1], p[0]])) } }] });
+  }
+  function buildTrackKml(segs) {
+    const { dist } = trackStats();
+    const ls = segs.map(s => `<LineString><tessellate>1</tessellate><coordinates>${s.map(p => `${p[1]},${p[0]},${p[2] ?? 0}`).join(' ')}</coordinates></LineString>`).join('');
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Trace GPS ${new Date(segs[0][0][3]).toLocaleString('fr-FR')}</name>
+ <Style id="trk"><LineStyle><color>ff7b45e0</color><width>4</width></LineStyle></Style>
+ <Placemark><name>Trace GPS (${(dist / 1000).toFixed(2)} km)</name><styleUrl>#trk</styleUrl><MultiGeometry>${ls}</MultiGeometry></Placemark>
+</Document></kml>`;
+  }
+  $('btnTrkGpx').onclick = () => { const s = trkPts(); if (s.length) saveFile(buildGpx(s), `trace_${stamp()}.gpx`, 'application/gpx+xml'); };
+  $('btnTrkGeo').onclick = () => { const s = trkPts(); if (s.length) saveFile(buildTrackGeojson(s), `trace_${stamp()}.geojson`, 'application/geo+json'); };
+  $('btnTrkKml').onclick = () => { const s = trkPts(); if (s.length) saveFile(buildTrackKml(s), `trace_${stamp()}.kml`, 'application/vnd.google-earth.kml+xml'); };
+  $('btnTrkClear').onclick = () => {
+    const b = $('btnTrkClear');
+    if (b.dataset.confirm) { track = watchId != null ? [[]] : []; saveTrack(); renderTrack(); delete b.dataset.confirm; b.textContent = 'Effacer la trace'; }
+    else { b.dataset.confirm = 1; b.textContent = 'Confirmer ?'; setTimeout(() => { delete b.dataset.confirm; b.textContent = 'Effacer la trace'; }, 4000); }
+  };
+  renderTrack();
+  window.__geo = { buildGeojson, buildKml, load, buildGpx };
 
   renderHist();
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
