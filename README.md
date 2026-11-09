@@ -35,3 +35,15 @@ Pour l'installer : menu du navigateur → « Ajouter à l'écran d'accueil ».
 Attributs de chaque point : num, code, latitude, longitude, altitude_m, precision_m, nb_mesures, date.
 
 **Précision** : le GPS d'un téléphone donne en général 3 à 10 m. Cela convient pour un repérage ou un levé sommaire, pas pour un levé topographique de précision, qui demande un GNSS RTK.
+
+## Traceurs GPS externes (plusieurs à la fois)
+L'app affiche en direct plusieurs traceurs à travers un serveur **Traccar** (gratuit, open source). Traccar comprend plus de 200 protocoles : Teltonika, Concox/GT06, Sinotrack, Coban, Queclink, Meitrack, montres GPS, etc.
+
+1. **Serveur** : pour essayer, utilisez un serveur de démonstration (https://demo.traccar.org, créez un compte). Pour un usage réel, installez Traccar sur un petit serveur (VPS) avec une adresse https, ou prenez l'offre hébergée de traccar.org.
+2. **Traceur** : configurez-le (souvent par SMS, voir sa notice) pour qu'il envoie à l'adresse du serveur, sur le port de son protocole. L'app affiche ce port quand vous choisissez le modèle. Liste complète : https://www.traccar.org/devices/
+3. **App** : ouvrez « Traceurs GPS », entrez l'adresse du serveur et vos identifiants Traccar, puis ajoutez chaque traceur (nom + IMEI).
+
+Ce que l'app permet : position en direct de tous les traceurs (rafraîchie toutes les 10 s), statut en ligne/hors ligne, vitesse, suivi d'un traceur, historique sur 1 h à 7 jours et export GPX / GeoJSON / KML.
+
+Si la connexion échoue avec « Serveur injoignable », ajoutez dans `traccar.xml` du serveur :
+`<entry key='web.origin'>https://y-sakhra-bot.github.io</entry>` puis redémarrez Traccar.

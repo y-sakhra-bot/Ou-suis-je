@@ -1,6 +1,6 @@
 // Service worker minimal : met l'interface en cache pour un lancement rapide / hors ligne.
-const CACHE = 'ousuisje-v3';
-const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg'];
+const CACHE = 'ousuisje-v4';
+const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg', 'traceurs.js'];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))));
 self.addEventListener('activate', e => e.waitUntil(
   caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
